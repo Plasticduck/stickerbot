@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Sticker Bot</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Sticker Bot</h1>
+      <div id="status-pill" class="pill idle">idle</div>
+    </header>
+
+    <nav class="tabs">
+      <button data-tab="run" class="active">Run</button>
+      <button data-tab="emails">Emails</button>
+      <button data-tab="history">History</button>
+      <button data-tab="prefs">Preferences</button>
+      <button data-tab="settings">Settings</button>
+    </nav>
+
+    <main>
+      <section id="tab-run" class="tab active">
+        <div class="card">
+          <h2>Start a run</h2>
+          <label>
+            Agenda (optional)
+            <textarea id="agenda" rows="2" placeholder="e.g. AI companies, or leave blank for a mix"></textarea>
+          </label>
+          <label>
+            What to ask for
+            <input id="item" type="text" placeholder="stickers" value="stickers" />
+          </label>
+          <div class="row">
+            <label class="flex">
+              Max emails
+              <input id="max-emails" type="number" min="1" max="500" value="5" />
+            </label>
+            <label class="flex">
+              Max spend (USD)
+              <input id="max-usd" type="number" min="0.1" max="50" step="0.1" value="1" />
+            </label>
+          </div>
+          <div id="estimate" class="estimate">Estimated cost: <b>-</b></div>
+          <div class="row">
+            <button id="start-btn" class="primary">Start</button>
+            <button id="stop-btn" class="danger" disabled>Stop</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Live status</h2>
+          <div id="live" class="live-grid">
+            <div><span>Run</span><b id="live-run">-</b></div>
+            <div><span>Step</span><b id="live-step">-</b></div>
+            <div><span>Sent</span><b id="live-sent">0</b></div>
+            <div><span>Spent</span><b id="live-spent">$0.0000</b></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Log</h2>
+          <div id="log" class="log"></div>
+        </div>
+      </section>
+
+      <section id="tab-emails" class="tab">
+        <div class="card">
+          <h2>Sent emails</h2>
+          <div id="emails"></div>
+        </div>
+      </section>
+
+      <section id="tab-history" class="tab">
+        <div class="card">
+          <h2>Past runs</h2>
+          <div id="runs"></div>
+        </div>
+      </section>
+
+      <section id="tab-prefs" class="tab">
+        <div class="card">
+          <h2>Preferences</h2>
+          <p class="muted">
+            Free-form text about what you like. Fed into discovery and email writing when
+            no specific agenda is set.
+          </p>
+          <textarea id="prefs" rows="8" placeholder="e.g. I love AI tools, dev stuff, mechanical keyboards, open source, privacy tech"></textarea>
+          <div class="row">
+            <button id="save-prefs" class="primary">Save</button>
+            <span id="prefs-saved" class="muted"></span>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-settings" class="tab">
+        <div class="card">
+          <h2>Environment</h2>
+          <div id="env"></div>
+          <p class="muted">
+            Edit .env in the project folder to change credentials. Restart the server after edits.
+          </p>
+          <div class="row">
+            <button id="test-smtp">Test SMTP</button>
+            <button id="test-imap">Test IMAP</button>
+            <span id="conn-result" class="muted"></span>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

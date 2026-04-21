@@ -1,0 +1,39 @@
+# Secrets
+.env
+.env.local
+.env.*.local
+
+# Local config / logs (also live in $HOME, but safety net)
+.stickerbot.json
+.stickerbot_sent.jsonl
+*.jsonl
+
+# Databases
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Dependencies
+node_modules/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Local-only Python CLI
+stickerbot.py
