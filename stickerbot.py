@@ -11,8 +11,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import smtplib
+import subprocess
 import sys
+import tempfile
 import time
 import threading
 import urllib.error
@@ -79,6 +82,16 @@ class RateLimitError(Exception):
 
 CONFIG_PATH = Path.home() / ".stickerbot.json"
 SENT_LOG_PATH = Path.home() / ".stickerbot_sent.jsonl"
+
+# Skills: community-authored presets (agenda template, default item, prompt
+# nudges). Each skill lives as one JSON file in SKILLS_DIR. Skills can be
+# published to GitHub as a public repo tagged with the SKILL_TOPIC topic;
+# `stickerbot skill browse` uses GitHub's search API to find them.
+SKILLS_DIR = Path.home() / ".stickerbot" / "skills"
+ACTIVE_SKILL_PATH = Path.home() / ".stickerbot" / "active_skill.txt"
+SKILL_TOPIC = "stickerbot-skill"
+SKILL_MANIFEST_FILENAME = "stickerbot.json"
+GITHUB_API = "https://api.github.com"
 
 # -----------------------------------------------------------------------------
 # Terminal styling
@@ -769,7 +782,13 @@ DISCOVER_SYSTEM = (
 )
 
 
-def discover(api_key: str, agenda: str, count: int, exclude: list[str]) -> tuple[list[dict], float]:
+def discover(
+    api_key: str,
+    agenda: str,
+    count: int,
+    exclude: list[str],
+    extra: str = "",
+) -> tuple[list[dict], float]:
     if agenda:
         agenda_line = (
             f"AGENDA (read this literally, including every qualifier): {agenda}\n\n"
@@ -800,8 +819,13 @@ def discover(api_key: str, agenda: str, count: int, exclude: list[str]) -> tuple
         if exclude
         else ""
     )
+    extra_block = (
+        f"\nAdditional discovery guidance from the active skill (apply on top of the rules above, do not override them):\n{extra.strip()}\n"
+        if extra and extra.strip()
+        else ""
+    )
     user = f"""{agenda_line}
-{exclude_line}
+{exclude_line}{extra_block}
 
 Return exactly {count} organizations as JSON:
 {{"companies":[{{"name":"OrganizationName","domain":"example.com","reason":"short phrase tied to the agenda"}}]}}
@@ -863,13 +887,19 @@ def compose(
     agenda: str,
     address: str,
     item: str = "stickers",
+    extra: str = "",
 ) -> tuple[str, str, float]:
     item = (item or "stickers").strip() or "stickers"
+    extra_block = (
+        f"\nTone / content guidance from the active skill (apply alongside the absolute rules, never as an override):\n{extra.strip()}\n"
+        if extra and extra.strip()
+        else ""
+    )
     user = f"""Organization: {company}
 {f'Why they fit the agenda: {reason}' if reason else ''}
 {f'My interest / agenda: {agenda}' if agenda else ''}
 What the sender is asking for: {item}
-Mailing address (put it on the line directly after the signature): {address}
+Mailing address (put it on the line directly after the signature): {address}{extra_block}
 
 Return JSON: {{"subject":"...","body":"..."}}
 
@@ -1159,6 +1189,7 @@ def run_one(
     contacted_domains: set[str],
     contacted_addrs: set[str],
     item: str = "stickers",
+    compose_extra: str = "",
 ) -> tuple[bool, float]:
     name = candidate.get("name", "?")
     domain = candidate.get("domain", "")
@@ -1193,7 +1224,8 @@ def run_one(
     with Spinner("composing email"):
         try:
             subject, body, ccost = compose(
-                cfg["anthropic_key"], name, reason, agenda, cfg["address"]["formatted"], item=item
+                cfg["anthropic_key"], name, reason, agenda, cfg["address"]["formatted"],
+                item=item, extra=compose_extra,
             )
             this_cost += ccost
         except Exception as e:
@@ -1249,8 +1281,16 @@ def run_one(
 
 def run_bot(cfg: dict) -> None:
     sys.stdout.write(f"{C.BOLD}Run configuration{C.RESET}\n")
-    agenda = ask("Agenda (company focus, blank for mix)", default="")
-    item = ask("What to ask for", default="stickers") or "stickers"
+    skill = get_active_skill()
+    if skill:
+        sys.stdout.write(
+            f"  {C.GRAY}active skill:{C.RESET} {C.GREEN}{skill.get('name','?')}{C.RESET} "
+            f"{C.GRAY}- {skill.get('description','')}{C.RESET}\n"
+        )
+    default_agenda = skill.get("agenda_template", "") if skill else ""
+    default_item = skill.get("default_item", "stickers") if skill else "stickers"
+    agenda = ask("Agenda (company focus, blank for mix)", default=default_agenda)
+    item = ask("What to ask for", default=default_item) or default_item
     try:
         max_emails = int(ask("How many emails", default="5") or "5")
     except ValueError:
@@ -1318,7 +1358,8 @@ def run_bot(cfg: dict) -> None:
                 with Spinner(f"asking Claude for {batch} candidates"):
                     try:
                         companies, dcost = discover(
-                            cfg["anthropic_key"], agenda, batch, sorted(contacted)[:40]
+                            cfg["anthropic_key"], agenda, batch, sorted(contacted)[:40],
+                            extra=(skill.get("discovery_extra", "") if skill else ""),
                         )
                         spent += dcost
                     except Exception as e:
@@ -1372,6 +1413,7 @@ def run_bot(cfg: dict) -> None:
                 did_send, this_cost = run_one(
                     cfg, idx, max_emails, cand, agenda, spent, budget,
                     contacted_domains, contacted_addrs, item=item,
+                    compose_extra=(skill.get("compose_extra", "") if skill else ""),
                 )
             except RateLimitError as e:
                 spent += 0  # compose cost already included if it got that far
@@ -1440,6 +1482,540 @@ def run_bot(cfg: dict) -> None:
 
 
 # -----------------------------------------------------------------------------
+# Skills: local presets + GitHub-based community store
+# -----------------------------------------------------------------------------
+
+
+SKILL_SCHEMA_FIELDS = {
+    "name": str,
+    "version": str,
+    "description": str,
+    "agenda_template": str,
+    "default_item": str,
+    "compose_extra": str,
+    "discovery_extra": str,
+}
+
+
+def _slugify(s: str) -> str:
+    out = []
+    for ch in (s or "").lower().strip():
+        if ch.isalnum():
+            out.append(ch)
+        elif ch in (" ", "-", "_"):
+            out.append("-")
+    slug = "".join(out).strip("-")
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    return slug or "skill"
+
+
+def validate_skill(manifest: dict) -> tuple[bool, str]:
+    if not isinstance(manifest, dict):
+        return False, "manifest must be a JSON object"
+    name = manifest.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return False, "missing 'name'"
+    if _slugify(name) != name:
+        return False, f"'name' must be a slug (lowercase, hyphens, no spaces), got {name!r}"
+    for field, typ in SKILL_SCHEMA_FIELDS.items():
+        if field in manifest and not isinstance(manifest[field], typ):
+            return False, f"'{field}' must be a {typ.__name__}"
+    return True, ""
+
+
+def _ensure_skills_dir() -> None:
+    SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def list_skills() -> list[dict]:
+    _ensure_skills_dir()
+    out: list[dict] = []
+    for p in sorted(SKILLS_DIR.glob("*.json")):
+        try:
+            out.append(json.loads(p.read_text(encoding="utf-8")))
+        except Exception:
+            continue
+    return out
+
+
+def load_skill(name: str) -> dict | None:
+    _ensure_skills_dir()
+    path = SKILLS_DIR / f"{name}.json"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def save_skill(manifest: dict) -> Path:
+    ok_flag, msg = validate_skill(manifest)
+    if not ok_flag:
+        raise ValueError(msg)
+    _ensure_skills_dir()
+    path = SKILLS_DIR / f"{manifest['name']}.json"
+    path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    return path
+
+
+def get_active_skill() -> dict | None:
+    if not ACTIVE_SKILL_PATH.exists():
+        return None
+    name = ACTIVE_SKILL_PATH.read_text(encoding="utf-8").strip()
+    if not name:
+        return None
+    return load_skill(name)
+
+
+def set_active_skill(name: str | None) -> None:
+    ACTIVE_SKILL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if name is None:
+        ACTIVE_SKILL_PATH.write_text("", encoding="utf-8")
+    else:
+        ACTIVE_SKILL_PATH.write_text(name, encoding="utf-8")
+
+
+def _github_get(path: str, accept: str = "application/vnd.github+json") -> Any:
+    url = f"{GITHUB_API}{path}" if path.startswith("/") else path
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Accept": accept,
+            "User-Agent": "stickerbot-cli",
+        },
+    )
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        data = resp.read()
+    if accept == "application/vnd.github+json":
+        return json.loads(data.decode("utf-8"))
+    return data
+
+
+def github_search_skills() -> list[dict]:
+    try:
+        data = _github_get(f"/search/repositories?q=topic:{SKILL_TOPIC}&sort=stars&order=desc&per_page=50")
+    except urllib.error.HTTPError as e:
+        if e.code == 403:
+            raise RuntimeError(
+                "GitHub search rate-limited. Set GITHUB_TOKEN env var for a higher limit."
+            ) from e
+        raise
+    items = data.get("items", [])
+    return [
+        {
+            "full_name": r.get("full_name", ""),
+            "description": r.get("description") or "",
+            "stars": r.get("stargazers_count", 0),
+            "url": r.get("html_url", ""),
+            "default_branch": r.get("default_branch", "main"),
+        }
+        for r in items
+    ]
+
+
+def github_fetch_manifest(owner_repo: str) -> dict:
+    # Resolve default branch.
+    info = _github_get(f"/repos/{owner_repo}")
+    branch = info.get("default_branch", "main")
+    raw_url = f"https://raw.githubusercontent.com/{owner_repo}/{branch}/{SKILL_MANIFEST_FILENAME}"
+    raw = _github_get(raw_url, accept="application/octet-stream")
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except Exception as e:
+        raise RuntimeError(f"fetched manifest is not valid JSON: {e}") from e
+
+
+AI_SKILL_SYSTEM = (
+    "You design 'skills' for StickerBot, a CLI that writes polite free-item request emails to organizations. "
+    "A skill is a reusable preset that steers the bot toward a category of organizations and shapes the email's "
+    "tone without overriding the bot's absolute rules.\n\n"
+    "Given the user's description, output a single JSON object with these fields:\n"
+    "  name              (slug: lowercase, hyphens only, no spaces)\n"
+    "  version           (semver, start with '1.0.0')\n"
+    "  description       (one sentence)\n"
+    "  agenda_template   (the default agenda text; taken literally by discovery — include every qualifier)\n"
+    "  default_item      (what to ask for by default: 'stickers', 'signatures', 'patches', etc.)\n"
+    "  compose_extra     (tone/content nudges for the email; a short paragraph; must not claim relationships, "
+    "geographic proximity, political alignment, or specific facts about the organization)\n"
+    "  discovery_extra   (extra filtering hints for discovery; a short paragraph)\n\n"
+    "Hard constraints for compose_extra:\n"
+    "- Do NOT instruct the model to claim to be an alum/student/constituent/local/customer/member/etc.\n"
+    "- Do NOT instruct the model to state conference/division/records/coach names/locations/founding dates.\n"
+    "- Do NOT instruct the model to use em dashes or en dashes.\n\n"
+    "Output strict JSON only. No prose, no markdown fences."
+)
+
+
+def ai_draft_skill(api_key: str, description: str) -> tuple[dict, float]:
+    text, cost = anthropic_complete(
+        api_key,
+        AI_SKILL_SYSTEM,
+        f"Describe-your-skill input from the user:\n\n{description}\n\nEmit the skill JSON now.",
+        max_tokens=800,
+        temperature=0.4,
+    )
+    data = extract_json_object(text)
+    if not data:
+        raise AnthropicError(f"bad skill JSON: {text[:200]}")
+    return data, cost
+
+
+def skill_apply_defaults_to_config(skill: dict | None, agenda: str, item: str) -> tuple[str, str]:
+    """Return (agenda, item) with skill defaults substituted when caller left them blank."""
+    if not skill:
+        return agenda, item
+    if not (agenda or "").strip() and skill.get("agenda_template"):
+        agenda = skill["agenda_template"]
+    if (not (item or "").strip() or item.strip() == "stickers") and skill.get("default_item"):
+        item = skill["default_item"]
+    return agenda, item
+
+
+# --- `stickerbot skill ...` CLI dispatcher -----------------------------------
+
+
+def _fmt_skill_line(s: dict) -> str:
+    return (
+        f"  {C.BOLD}{s.get('name','?')}{C.RESET} "
+        f"{C.GRAY}v{s.get('version','?')}{C.RESET}  {s.get('description','')}"
+    )
+
+
+def cmd_skill_list() -> int:
+    enable_vt()
+    skills = list_skills()
+    active = get_active_skill()
+    active_name = active["name"] if active else None
+    if not skills:
+        sys.stdout.write(
+            f"{C.GRAY}no skills installed yet.{C.RESET}\n"
+            f"  try: {C.BOLD}stickerbot skill browse{C.RESET}\n"
+            f"   or: {C.BOLD}stickerbot skill new{C.RESET}\n"
+        )
+        return 0
+    sys.stdout.write(f"{C.BOLD}installed skills{C.RESET}  ({SKILLS_DIR})\n\n")
+    for s in skills:
+        marker = f"{C.GREEN}*{C.RESET} " if s.get("name") == active_name else "  "
+        sys.stdout.write(f"{marker}{_fmt_skill_line(s)[2:]}\n")
+    if active_name:
+        sys.stdout.write(f"\n{C.GRAY}active:{C.RESET} {C.GREEN}{active_name}{C.RESET}\n")
+    else:
+        sys.stdout.write(f"\n{C.GRAY}active:{C.RESET} (none)\n")
+    return 0
+
+
+def cmd_skill_browse() -> int:
+    enable_vt()
+    sys.stdout.write(f"{C.GRAY}searching GitHub for topic:{SKILL_TOPIC}...{C.RESET}\n")
+    try:
+        results = github_search_skills()
+    except Exception as e:
+        sys.stdout.write(f"{C.RED}error: {e}{C.RESET}\n")
+        return 1
+    if not results:
+        sys.stdout.write(
+            f"{C.GRAY}no published skills yet.{C.RESET}\n"
+            f"  be the first: {C.BOLD}stickerbot skill publish <name>{C.RESET}\n"
+        )
+        return 0
+    sys.stdout.write(f"\n{C.BOLD}published skills{C.RESET}\n\n")
+    for r in results:
+        sys.stdout.write(
+            f"  {C.BOLD}{r['full_name']}{C.RESET}  {C.GRAY}★ {r['stars']}{C.RESET}\n"
+            f"    {r['description']}\n"
+            f"    {C.GRAY}{r['url']}{C.RESET}\n\n"
+        )
+    sys.stdout.write(
+        f"{C.GRAY}install one with:{C.RESET} {C.BOLD}stickerbot skill install <owner/repo>{C.RESET}\n"
+    )
+    return 0
+
+
+def _parse_owner_repo(arg: str) -> str:
+    arg = arg.strip()
+    if arg.startswith("http"):
+        # https://github.com/owner/repo(.git)?
+        parts = arg.rstrip("/").split("/")
+        if len(parts) >= 2:
+            repo = parts[-1]
+            owner = parts[-2]
+            if repo.endswith(".git"):
+                repo = repo[:-4]
+            return f"{owner}/{repo}"
+    return arg
+
+
+def cmd_skill_install(arg: str) -> int:
+    enable_vt()
+    owner_repo = _parse_owner_repo(arg)
+    if "/" not in owner_repo:
+        sys.stdout.write(f"{C.RED}error: expected owner/repo, got {arg!r}{C.RESET}\n")
+        return 2
+    sys.stdout.write(f"{C.GRAY}fetching {owner_repo}/{SKILL_MANIFEST_FILENAME}...{C.RESET}\n")
+    try:
+        manifest = github_fetch_manifest(owner_repo)
+    except Exception as e:
+        sys.stdout.write(f"{C.RED}error: {e}{C.RESET}\n")
+        return 1
+    ok_flag, msg = validate_skill(manifest)
+    if not ok_flag:
+        sys.stdout.write(f"{C.RED}invalid skill manifest: {msg}{C.RESET}\n")
+        return 1
+    path = save_skill(manifest)
+    sys.stdout.write(
+        f"{C.GREEN}✓{C.RESET} installed {C.BOLD}{manifest['name']}{C.RESET} -> {C.GRAY}{path}{C.RESET}\n"
+        f"  activate with: {C.BOLD}stickerbot skill use {manifest['name']}{C.RESET}\n"
+    )
+    return 0
+
+
+def cmd_skill_new(ai_description: str | None = None) -> int:
+    enable_vt()
+    if ai_description:
+        cfg = load_config()
+        if not cfg or not cfg.get("anthropic_key"):
+            sys.stdout.write(
+                f"{C.RED}no Anthropic key saved. Run `stickerbot` once to set up first.{C.RESET}\n"
+            )
+            return 1
+        sys.stdout.write(f"{C.GRAY}asking Claude to draft a skill...{C.RESET}\n")
+        try:
+            manifest, cost = ai_draft_skill(cfg["anthropic_key"], ai_description)
+        except Exception as e:
+            sys.stdout.write(f"{C.RED}error: {e}{C.RESET}\n")
+            return 1
+        sys.stdout.write(f"{C.GRAY}(draft cost ${cost:.4f}){C.RESET}\n\n")
+        sys.stdout.write(f"{C.BOLD}draft{C.RESET}\n")
+        sys.stdout.write(json.dumps(manifest, indent=2) + "\n\n")
+        choice = ask("Save this skill? (y/n/edit)", default="y").lower()
+        if choice in ("n", "no"):
+            sys.stdout.write(f"{C.GRAY}discarded{C.RESET}\n")
+            return 0
+        if choice in ("e", "edit"):
+            manifest = _interactive_skill_edit(manifest)
+    else:
+        manifest = _interactive_skill_edit({})
+
+    ok_flag, msg = validate_skill(manifest)
+    if not ok_flag:
+        sys.stdout.write(f"{C.RED}invalid: {msg}{C.RESET}\n")
+        return 1
+    path = save_skill(manifest)
+    sys.stdout.write(
+        f"{C.GREEN}✓{C.RESET} saved {C.BOLD}{manifest['name']}{C.RESET} -> {C.GRAY}{path}{C.RESET}\n"
+    )
+    return 0
+
+
+def _interactive_skill_edit(seed: dict) -> dict:
+    sys.stdout.write(f"\n{C.BOLD}skill playground{C.RESET} {C.GRAY}(leave blank to keep current){C.RESET}\n")
+    name = ask("  name (slug)", default=seed.get("name", ""))
+    if name:
+        name = _slugify(name)
+    version = ask("  version", default=seed.get("version", "1.0.0"))
+    description = ask("  description", default=seed.get("description", ""))
+    agenda_template = ask("  agenda template", default=seed.get("agenda_template", ""))
+    default_item = ask("  default item", default=seed.get("default_item", "stickers"))
+    sys.stdout.write(f"  {C.GRAY}compose_extra (tone guidance; one line):{C.RESET}\n")
+    compose_extra = ask("    >", default=seed.get("compose_extra", ""))
+    sys.stdout.write(f"  {C.GRAY}discovery_extra (extra filtering hints; one line):{C.RESET}\n")
+    discovery_extra = ask("    >", default=seed.get("discovery_extra", ""))
+    return {
+        "name": name,
+        "version": version or "1.0.0",
+        "description": description,
+        "agenda_template": agenda_template,
+        "default_item": default_item or "stickers",
+        "compose_extra": compose_extra,
+        "discovery_extra": discovery_extra,
+    }
+
+
+def cmd_skill_use(name: str) -> int:
+    enable_vt()
+    skill = load_skill(name)
+    if not skill:
+        sys.stdout.write(f"{C.RED}no skill named {name!r} installed.{C.RESET}\n")
+        return 1
+    set_active_skill(name)
+    sys.stdout.write(f"{C.GREEN}✓{C.RESET} active skill: {C.BOLD}{name}{C.RESET}\n")
+    return 0
+
+
+def cmd_skill_clear() -> int:
+    enable_vt()
+    set_active_skill(None)
+    sys.stdout.write(f"{C.GREEN}✓{C.RESET} active skill cleared\n")
+    return 0
+
+
+def cmd_skill_show(name: str) -> int:
+    enable_vt()
+    skill = load_skill(name)
+    if not skill:
+        sys.stdout.write(f"{C.RED}no skill named {name!r}{C.RESET}\n")
+        return 1
+    sys.stdout.write(json.dumps(skill, indent=2) + "\n")
+    return 0
+
+
+def cmd_skill_remove(name: str) -> int:
+    enable_vt()
+    path = SKILLS_DIR / f"{name}.json"
+    if not path.exists():
+        sys.stdout.write(f"{C.RED}no skill named {name!r}{C.RESET}\n")
+        return 1
+    path.unlink()
+    active = get_active_skill()
+    if active and active.get("name") == name:
+        set_active_skill(None)
+    sys.stdout.write(f"{C.GREEN}✓{C.RESET} removed {name}\n")
+    return 0
+
+
+def cmd_skill_publish(name: str) -> int:
+    enable_vt()
+    skill = load_skill(name)
+    if not skill:
+        sys.stdout.write(f"{C.RED}no skill named {name!r}{C.RESET}\n")
+        return 1
+    if not shutil.which("gh"):
+        sys.stdout.write(
+            f"{C.RED}error: GitHub CLI 'gh' not found.{C.RESET}\n"
+            f"  install from: https://cli.github.com/\n"
+            f"  then run: gh auth login\n"
+        )
+        return 1
+
+    repo_name = f"stickerbot-skill-{skill['name']}"
+    sys.stdout.write(
+        f"{C.GRAY}will publish as:{C.RESET} {C.BOLD}{repo_name}{C.RESET} "
+        f"{C.GRAY}(public, topic '{SKILL_TOPIC}'){C.RESET}\n"
+    )
+    confirm = ask("Proceed? (y/n)", default="y").lower()
+    if confirm not in ("y", "yes"):
+        return 0
+
+    with tempfile.TemporaryDirectory() as td:
+        tdir = Path(td)
+        (tdir / SKILL_MANIFEST_FILENAME).write_text(
+            json.dumps(skill, indent=2), encoding="utf-8"
+        )
+        readme = (
+            f"# {skill['name']}\n\n{skill.get('description','')}\n\n"
+            f"Install:\n\n```\nstickerbot skill install <owner>/{repo_name}\n```\n"
+        )
+        (tdir / "README.md").write_text(readme, encoding="utf-8")
+        try:
+            subprocess.run(["git", "init", "-b", "main"], cwd=tdir, check=True, capture_output=True)
+            subprocess.run(["git", "add", "."], cwd=tdir, check=True, capture_output=True)
+            subprocess.run(
+                ["git", "commit", "-m", f"publish skill: {skill['name']}"],
+                cwd=tdir,
+                check=True,
+                capture_output=True,
+            )
+            sys.stdout.write(f"{C.GRAY}creating GitHub repo...{C.RESET}\n")
+            subprocess.run(
+                [
+                    "gh", "repo", "create", repo_name,
+                    "--public",
+                    "--source=.",
+                    "--push",
+                    "--description", skill.get("description", "")[:350] or f"StickerBot skill: {skill['name']}",
+                ],
+                cwd=tdir,
+                check=True,
+            )
+            sys.stdout.write(f"{C.GRAY}adding topic '{SKILL_TOPIC}'...{C.RESET}\n")
+            subprocess.run(
+                ["gh", "repo", "edit", "--add-topic", SKILL_TOPIC],
+                cwd=tdir,
+                check=True,
+                capture_output=True,
+            )
+        except subprocess.CalledProcessError as e:
+            err = (e.stderr or b"").decode("utf-8", "replace").strip() or str(e)
+            sys.stdout.write(f"{C.RED}publish failed: {err}{C.RESET}\n")
+            return 1
+
+    sys.stdout.write(
+        f"{C.GREEN}✓{C.RESET} published {C.BOLD}{skill['name']}{C.RESET} as {repo_name}\n"
+        f"  others can install with: {C.BOLD}stickerbot skill install <your-username>/{repo_name}{C.RESET}\n"
+    )
+    return 0
+
+
+def _skill_usage() -> int:
+    sys.stdout.write(
+        f"{C.BOLD}stickerbot skill{C.RESET} - manage skills\n\n"
+        f"  {C.BOLD}list{C.RESET}                     list installed skills\n"
+        f"  {C.BOLD}browse{C.RESET}                   browse skills published on GitHub\n"
+        f"  {C.BOLD}install{C.RESET} <owner/repo>    install a published skill\n"
+        f"  {C.BOLD}new{C.RESET}                      create a skill in an interactive playground\n"
+        f"  {C.BOLD}new --ai <description>{C.RESET}   have Claude draft a skill from a description\n"
+        f"  {C.BOLD}use{C.RESET} <name>              set the active skill for the next run\n"
+        f"  {C.BOLD}clear{C.RESET}                    unset the active skill\n"
+        f"  {C.BOLD}show{C.RESET} <name>             print the skill's manifest\n"
+        f"  {C.BOLD}remove{C.RESET} <name>           delete a local skill\n"
+        f"  {C.BOLD}publish{C.RESET} <name>          publish a skill to GitHub\n"
+    )
+    return 0
+
+
+def cmd_skill(args: list[str]) -> int:
+    if not args:
+        return _skill_usage()
+    sub = args[0]
+    rest = args[1:]
+    if sub in ("list", "ls"):
+        return cmd_skill_list()
+    if sub == "browse":
+        return cmd_skill_browse()
+    if sub == "install":
+        if not rest:
+            sys.stdout.write(f"{C.RED}usage: stickerbot skill install <owner/repo>{C.RESET}\n")
+            return 2
+        return cmd_skill_install(rest[0])
+    if sub == "new":
+        if rest and rest[0] == "--ai":
+            desc = " ".join(rest[1:]).strip()
+            if not desc:
+                sys.stdout.write(f"{C.RED}usage: stickerbot skill new --ai <description>{C.RESET}\n")
+                return 2
+            return cmd_skill_new(ai_description=desc)
+        return cmd_skill_new()
+    if sub == "use":
+        if not rest:
+            sys.stdout.write(f"{C.RED}usage: stickerbot skill use <name>{C.RESET}\n")
+            return 2
+        return cmd_skill_use(rest[0])
+    if sub == "clear":
+        return cmd_skill_clear()
+    if sub == "show":
+        if not rest:
+            sys.stdout.write(f"{C.RED}usage: stickerbot skill show <name>{C.RESET}\n")
+            return 2
+        return cmd_skill_show(rest[0])
+    if sub == "remove":
+        if not rest:
+            sys.stdout.write(f"{C.RED}usage: stickerbot skill remove <name>{C.RESET}\n")
+            return 2
+        return cmd_skill_remove(rest[0])
+    if sub == "publish":
+        if not rest:
+            sys.stdout.write(f"{C.RED}usage: stickerbot skill publish <name>{C.RESET}\n")
+            return 2
+        return cmd_skill_publish(rest[0])
+    return _skill_usage()
+
+
+# -----------------------------------------------------------------------------
 # Entry point
 # -----------------------------------------------------------------------------
 
@@ -1502,9 +2078,13 @@ def cmd_lookup(msgid_arg: str) -> int:
 
 
 def main() -> int:
-    # CLI subcommand: python stickerbot.py lookup <msgid>
+    # CLI subcommand: stickerbot lookup <msgid>
     if len(sys.argv) >= 3 and sys.argv[1] in ("lookup", "--lookup", "-l"):
         return cmd_lookup(" ".join(sys.argv[2:]))
+
+    # CLI subcommand: stickerbot skill ...
+    if len(sys.argv) >= 2 and sys.argv[1] == "skill":
+        return cmd_skill(sys.argv[2:])
 
     enable_vt()
     clear_screen()

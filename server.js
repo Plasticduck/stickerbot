@@ -15,6 +15,20 @@ import { startRun, stopCurrent, getCurrent } from './src/orchestrator.js';
 import { verifySmtp } from './src/send.js';
 import { verifyImap } from './src/verify.js';
 import { PER_EMAIL_COST_USD, MODEL } from './src/anthropic.js';
+import {
+  listSkills,
+  loadSkill,
+  saveSkill,
+  removeSkill,
+  getActiveSkill,
+  setActiveSkill,
+  githubSearchSkills,
+  githubFetchManifest,
+  parseOwnerRepo,
+  aiDraftSkill,
+  publishSkill,
+  validateSkill,
+} from './src/skills.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -130,6 +144,85 @@ app.post('/api/test-imap', async (_req, res) => {
     res.json({ ok: true });
   } catch (e) {
     res.status(400).json({ ok: false, error: e.message });
+  }
+});
+
+// --- Skills API ---
+
+app.get('/api/skills', (_req, res) => {
+  const active = getActiveSkill();
+  res.json({ skills: listSkills(), activeName: active ? active.name : null });
+});
+
+app.get('/api/skills/browse', async (_req, res) => {
+  try {
+    const results = await githubSearchSkills();
+    res.json({ results });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/skills/install', async (req, res) => {
+  try {
+    const ownerRepo = parseOwnerRepo(req.body?.ownerRepo || '');
+    if (!ownerRepo.includes('/')) return res.status(400).json({ error: 'expected owner/repo' });
+    const manifest = await githubFetchManifest(ownerRepo);
+    const v = validateSkill(manifest);
+    if (!v.ok) return res.status(400).json({ error: `invalid manifest: ${v.error}` });
+    saveSkill(manifest);
+    res.json({ ok: true, skill: manifest });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/skills', async (req, res) => {
+  try {
+    const { manifest, aiDescription } = req.body || {};
+    let skill = manifest;
+    let cost = 0;
+    if (aiDescription && (!manifest || Object.keys(manifest).length === 0)) {
+      if (!process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY.includes('REPLACE')) {
+        return res.status(400).json({ error: 'ANTHROPIC_API_KEY not set' });
+      }
+      const drafted = await aiDraftSkill(aiDescription);
+      skill = drafted.manifest;
+      cost = drafted.cost;
+    }
+    if (!skill) return res.status(400).json({ error: 'provide manifest or aiDescription' });
+    const v = validateSkill(skill);
+    if (!v.ok) return res.status(400).json({ error: v.error });
+    saveSkill(skill);
+    res.json({ ok: true, skill, cost });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/skills/use', (req, res) => {
+  const name = (req.body?.name || '').trim();
+  if (!name) {
+    setActiveSkill(null);
+    return res.json({ ok: true, activeName: null });
+  }
+  if (!loadSkill(name)) return res.status(404).json({ error: `no skill named ${name}` });
+  setActiveSkill(name);
+  res.json({ ok: true, activeName: name });
+});
+
+app.delete('/api/skills/:name', (req, res) => {
+  const ok = removeSkill(req.params.name);
+  if (!ok) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
+});
+
+app.post('/api/skills/publish', (req, res) => {
+  try {
+    const repoName = publishSkill(req.body?.name || '');
+    res.json({ ok: true, repoName });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
   }
 });
 

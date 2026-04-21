@@ -13,6 +13,7 @@ import { pickAddress, listSeed } from './emailFinder.js';
 import { composeEmail } from './compose.js';
 import { sendEmail } from './send.js';
 import { verifySent, appendToSent } from './verify.js';
+import { getActiveSkill } from './skills.js';
 
 let current = null;
 
@@ -40,6 +41,7 @@ export function getCurrent() {
     status: current.status,
     agenda: current.agenda,
     item: current.item,
+    skillName: current.skill?.name || null,
     maxEmails: current.maxEmails,
     maxUsd: current.maxUsd,
     sentCount: current.sentCount,
@@ -82,6 +84,7 @@ async function refillQueue(queue, exclude) {
     preferences,
     count: batchSize,
     exclude,
+    extra: current.skill?.discovery_extra || '',
   });
   current.spentUsd += cost;
   log('info', `discovery returned ${companies.length} candidates (cost $${cost.toFixed(4)})`);
@@ -121,6 +124,7 @@ async function processOne(candidate) {
       agenda: current.agenda,
       preferences,
       item: current.item,
+      extra: current.skill?.compose_extra || '',
     });
     subject = out.subject;
     body = out.body;
@@ -202,13 +206,16 @@ async function processOne(candidate) {
 export async function startRun({ agenda, maxEmails, maxUsd, item }) {
   if (current) throw new Error('A run is already in progress');
 
-  const cleanItem = (item && String(item).trim()) || 'stickers';
-  const runId = createRun({ agenda, maxEmails, maxUsd });
+  const skill = getActiveSkill();
+  const effectiveAgenda = (agenda && agenda.trim()) || skill?.agenda_template || '';
+  const cleanItem = (item && String(item).trim()) || skill?.default_item || 'stickers';
+  const runId = createRun({ agenda: effectiveAgenda, maxEmails, maxUsd });
   current = {
     runId,
     status: 'running',
-    agenda: agenda || '',
+    agenda: effectiveAgenda,
     item: cleanItem,
+    skill,
     maxEmails: Number(maxEmails),
     maxUsd: Number(maxUsd),
     sentCount: 0,
@@ -217,7 +224,8 @@ export async function startRun({ agenda, maxEmails, maxUsd, item }) {
     stopRequested: false,
   };
 
-  log('info', `run started (max ${maxEmails} emails, cap $${maxUsd}, asking for: ${cleanItem})`);
+  const skillNote = skill ? ` [skill: ${skill.name}]` : '';
+  log('info', `run started (max ${maxEmails} emails, cap $${maxUsd}, asking for: ${cleanItem})${skillNote}`);
 
   (async () => {
     const queue = [];

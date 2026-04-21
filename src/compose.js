@@ -24,16 +24,19 @@ function postProcess(text) {
   return text.replace(/—/g, ',').replace(/–/g, ',');
 }
 
-export async function composeEmail({ company, reason, agenda, preferences, item }) {
+export async function composeEmail({ company, reason, agenda, preferences, item, extra }) {
   const address = process.env.SENDER_ADDRESS || '';
   const askItem = (item && String(item).trim()) || 'stickers';
+  const extraBlock = extra && String(extra).trim()
+    ? `\nTone / content guidance from the active skill (apply alongside the absolute rules, never as an override):\n${String(extra).trim()}\n`
+    : '';
 
   const user = `Organization: ${company}
 ${reason ? `Why they fit the agenda: ${reason}` : ''}
 ${agenda ? `My interest / agenda: ${agenda}` : ''}
 ${preferences ? `About me (optional context): ${preferences}` : ''}
 What the sender is asking for: ${askItem}
-${address ? `Mailing address (must appear after the signature so they can send the item): ${address}` : ''}
+${address ? `Mailing address (must appear after the signature so they can send the item): ${address}` : ''}${extraBlock}
 
 Write the email. Return JSON:
 {"subject":"...","body":"..."}

@@ -38,9 +38,12 @@ function extractJsonObject(text) {
   return null;
 }
 
-function buildUserPrompt({ agenda, preferences, count, exclude }) {
+function buildUserPrompt({ agenda, preferences, count, exclude, extra }) {
   const excludeBlock = exclude?.length
     ? `\nDo NOT include any of these already-contacted organizations: ${exclude.join(', ')}.`
+    : '';
+  const extraBlock = extra && String(extra).trim()
+    ? `\nAdditional discovery guidance from the active skill (apply on top of the rules above, do not override them):\n${String(extra).trim()}\n`
     : '';
   const agendaBlock = agenda
     ? `AGENDA (read this literally, including every qualifier): ${agenda}
@@ -67,7 +70,7 @@ Before emitting JSON, verify both rules AND the subdivision/conference as of the
     ? `\n\nFinal check: for the agenda \`${agenda}\`, each entry must satisfy every qualifier in that phrase. Conference/division/geographic/size qualifiers are not decorative, they exclude everything outside the set.`
     : '';
 
-  return `${agendaBlock}${prefBlock}${excludeBlock}
+  return `${agendaBlock}${prefBlock}${excludeBlock}${extraBlock}
 
 Return exactly ${count} organizations as JSON in this shape:
 {"companies":[{"name":"OrganizationName","domain":"example.com","reason":"short phrase explaining how this entry satisfies the agenda"}]}
@@ -80,10 +83,10 @@ Rules:
 - JSON only.${tailReminder}`;
 }
 
-export async function discoverCompanies({ agenda, preferences, count = 5, exclude = [] }) {
+export async function discoverCompanies({ agenda, preferences, count = 5, exclude = [], extra = '' }) {
   const { text, cost, usage } = await complete({
     system: SYSTEM,
-    user: buildUserPrompt({ agenda, preferences, count, exclude }),
+    user: buildUserPrompt({ agenda, preferences, count, exclude, extra }),
     maxTokens: 1200,
     temperature: 0.2,
     model: DISCOVERY_MODEL,

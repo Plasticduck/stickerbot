@@ -26,6 +26,7 @@ document.querySelectorAll('nav.tabs button').forEach((b) => {
     $(`tab-${b.dataset.tab}`).classList.add('active');
     if (b.dataset.tab === 'emails') loadEmails();
     if (b.dataset.tab === 'history') loadRuns();
+    if (b.dataset.tab === 'skills') loadSkills();
     if (b.dataset.tab === 'prefs') loadPrefs();
     if (b.dataset.tab === 'settings') loadEnv();
   });
@@ -238,3 +239,158 @@ async function pullLog(runId) {
 setInterval(poll, 1500);
 poll();
 loadEnv();
+
+// --- Skills tab ---
+
+async function loadSkills() {
+  try {
+    const data = await api('/api/skills');
+    const active = data.activeName;
+    $('active-skill').innerHTML = `Active: <b>${active ? escapeHtml(active) : '(none)'}</b>`;
+    const list = $('skills-list');
+    if (!data.skills.length) {
+      list.innerHTML = '<p class="muted">No skills installed. Create one below, or browse the published ones.</p>';
+      return;
+    }
+    list.innerHTML = data.skills
+      .map(
+        (s) => `
+      <div class="card-inner" data-name="${escapeHtml(s.name)}">
+        <div><b>${escapeHtml(s.name)}</b> <span class="muted">v${escapeHtml(s.version || '')}</span></div>
+        <div class="muted">${escapeHtml(s.description || '')}</div>
+        <div class="muted">agenda: ${escapeHtml(s.agenda_template || '')}</div>
+        <div class="muted">item: ${escapeHtml(s.default_item || 'stickers')}</div>
+        <div class="row">
+          <button data-act="use" data-name="${escapeHtml(s.name)}">${active === s.name ? 'Active' : 'Use'}</button>
+          <button data-act="publish" data-name="${escapeHtml(s.name)}">Publish</button>
+          <button data-act="remove" data-name="${escapeHtml(s.name)}" class="danger">Remove</button>
+        </div>
+      </div>`
+      )
+      .join('');
+    list.querySelectorAll('button[data-act]').forEach((btn) => {
+      btn.addEventListener('click', () => handleSkillAction(btn.dataset.act, btn.dataset.name));
+    });
+  } catch (e) {
+    $('skills-list').innerHTML = `<p class="muted">error: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function handleSkillAction(act, name) {
+  try {
+    if (act === 'use') {
+      await api('/api/skills/use', { method: 'POST', body: JSON.stringify({ name }) });
+    } else if (act === 'remove') {
+      if (!confirm(`Delete skill "${name}"?`)) return;
+      await api(`/api/skills/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    } else if (act === 'publish') {
+      if (!confirm(`Publish "${name}" as a public GitHub repo?`)) return;
+      const res = await api('/api/skills/publish', { method: 'POST', body: JSON.stringify({ name }) });
+      alert(`Published as ${res.repoName}`);
+    }
+    loadSkills();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+function showSkillEditor(seed = {}) {
+  $('skill-editor').classList.remove('hidden');
+  $('skill-name').value = seed.name || '';
+  $('skill-version').value = seed.version || '1.0.0';
+  $('skill-description').value = seed.description || '';
+  $('skill-agenda').value = seed.agenda_template || '';
+  $('skill-item').value = seed.default_item || 'stickers';
+  $('skill-compose').value = seed.compose_extra || '';
+  $('skill-discovery').value = seed.discovery_extra || '';
+}
+
+$('skill-manual')?.addEventListener('click', () => showSkillEditor({}));
+$('skill-cancel')?.addEventListener('click', () => $('skill-editor').classList.add('hidden'));
+
+$('skill-ai-draft')?.addEventListener('click', async () => {
+  const desc = $('skill-ai-desc').value.trim();
+  if (!desc) return alert('Describe the skill first.');
+  try {
+    const res = await api('/api/skills', {
+      method: 'POST',
+      body: JSON.stringify({ aiDescription: desc }),
+    });
+    showSkillEditor(res.skill);
+    loadSkills();
+  } catch (e) {
+    alert(e.message);
+  }
+});
+
+$('skill-save')?.addEventListener('click', async () => {
+  const manifest = {
+    name: $('skill-name').value.trim(),
+    version: $('skill-version').value.trim() || '1.0.0',
+    description: $('skill-description').value.trim(),
+    agenda_template: $('skill-agenda').value.trim(),
+    default_item: $('skill-item').value.trim() || 'stickers',
+    compose_extra: $('skill-compose').value.trim(),
+    discovery_extra: $('skill-discovery').value.trim(),
+  };
+  try {
+    await api('/api/skills', { method: 'POST', body: JSON.stringify({ manifest }) });
+    $('skill-editor').classList.add('hidden');
+    loadSkills();
+  } catch (e) {
+    alert(e.message);
+  }
+});
+
+$('skill-browse')?.addEventListener('click', async () => {
+  $('skill-browse-note').textContent = 'searching...';
+  try {
+    const { results } = await api('/api/skills/browse');
+    $('skill-browse-note').textContent = `${results.length} published`;
+    $('skill-browse-list').innerHTML = results
+      .map(
+        (r) => `
+      <div class="card-inner">
+        <div><b>${escapeHtml(r.full_name)}</b> <span class="muted">★ ${r.stars}</span></div>
+        <div class="muted">${escapeHtml(r.description || '')}</div>
+        <div class="row">
+          <button data-install="${escapeHtml(r.full_name)}">Install</button>
+          <a href="${escapeHtml(r.url)}" target="_blank" rel="noopener">View on GitHub</a>
+        </div>
+      </div>`
+      )
+      .join('');
+    $('skill-browse-list').querySelectorAll('button[data-install]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        try {
+          await api('/api/skills/install', {
+            method: 'POST',
+            body: JSON.stringify({ ownerRepo: btn.dataset.install }),
+          });
+          loadSkills();
+          alert(`Installed ${btn.dataset.install}`);
+        } catch (e) {
+          alert(e.message);
+        }
+      });
+    });
+  } catch (e) {
+    $('skill-browse-note').textContent = `error: ${e.message}`;
+  }
+});
+
+$('skill-install-btn')?.addEventListener('click', async () => {
+  const ownerRepo = $('skill-install-input').value.trim();
+  if (!ownerRepo) return;
+  $('skill-install-note').textContent = 'installing...';
+  try {
+    const res = await api('/api/skills/install', {
+      method: 'POST',
+      body: JSON.stringify({ ownerRepo }),
+    });
+    $('skill-install-note').textContent = `installed ${res.skill.name}`;
+    loadSkills();
+  } catch (e) {
+    $('skill-install-note').textContent = `error: ${e.message}`;
+  }
+});

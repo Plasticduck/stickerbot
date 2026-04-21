@@ -2,6 +2,31 @@
 
 Changes made during the iterative improvement session, most recent first.
 
+## Skills: reusable presets + GitHub-based "app store"
+- Added a skill system. A skill bundles an agenda template, default item, and
+  tone/discovery guidance that a run can opt into.
+- Local storage: `~/.stickerbot/skills/*.json`, active skill tracked in
+  `~/.stickerbot/active_skill.txt`.
+- **Playground**: interactive editor (`stickerbot skill new` or the web UI's
+  Skills tab) and AI-drafted creation (`stickerbot skill new --ai "<desc>"`
+  or the "Draft with AI" button).
+- **Publishing**: `stickerbot skill publish <name>` shells out to the `gh` CLI
+  to create a public repo `stickerbot-skill-<name>` and tag it with the
+  `stickerbot-skill` topic. No backend, no accounts.
+- **Discovery**: `stickerbot skill browse` hits GitHub's search API for
+  `topic:stickerbot-skill`. The topic itself is the index.
+- **Install**: `stickerbot skill install <owner/repo>` fetches the raw
+  `stickerbot.json` manifest from the default branch.
+- Integrated into the run flow: when a skill is active, its `agenda_template`
+  becomes the default agenda prompt, `default_item` becomes the default item,
+  and `compose_extra` / `discovery_extra` are appended to the user prompts
+  (never the system prompt, so absolute rules always win).
+- Mirrored across Python (new section in [stickerbot.py](stickerbot.py)) and
+  Node (new [src/skills.js](src/skills.js), endpoints in [server.js](server.js),
+  new "Skills" tab in [public/index.html](public/index.html) and
+  [public/app.js](public/app.js)).
+- Optional `GITHUB_TOKEN` env var raises GitHub's unauth rate limit.
+
 ## Configurable request item
 - Added a "What to ask for" input with `stickers` as the default.
   - Python: `run_bot` prompts for the item; threaded through `run_one` → `compose(item=...)`.

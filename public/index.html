@@ -16,6 +16,7 @@
       <button data-tab="run" class="active">Run</button>
       <button data-tab="emails">Emails</button>
       <button data-tab="history">History</button>
+      <button data-tab="skills">Skills</button>
       <button data-tab="prefs">Preferences</button>
       <button data-tab="settings">Settings</button>
     </nav>
@@ -76,6 +77,64 @@
         <div class="card">
           <h2>Past runs</h2>
           <div id="runs"></div>
+        </div>
+      </section>
+
+      <section id="tab-skills" class="tab">
+        <div class="card">
+          <h2>Skills</h2>
+          <p class="muted">
+            A skill is a reusable preset (agenda template, default item, tone guidance).
+            Set one active and it fills in the run form for you.
+          </p>
+          <div id="active-skill" class="muted">Active: <b>(none)</b></div>
+          <div id="skills-list"></div>
+        </div>
+
+        <div class="card">
+          <h3>Create a skill</h3>
+          <p class="muted">Build from scratch, or describe it and let Claude draft one.</p>
+          <label>
+            Describe the skill (for AI draft)
+            <textarea id="skill-ai-desc" rows="3" placeholder="e.g. target indie board game studios with a direct-to-consumer store, ask for stickers or promo postcards, tone should be friendly and hobbyist"></textarea>
+          </label>
+          <div class="row">
+            <button id="skill-ai-draft" class="primary">Draft with AI</button>
+            <button id="skill-manual" type="button">Build manually</button>
+          </div>
+
+          <div id="skill-editor" class="hidden">
+            <hr />
+            <label>Name (slug) <input id="skill-name" placeholder="indie-board-games" /></label>
+            <label>Version <input id="skill-version" value="1.0.0" /></label>
+            <label>Description <input id="skill-description" /></label>
+            <label>Agenda template <input id="skill-agenda" /></label>
+            <label>Default item <input id="skill-item" value="stickers" /></label>
+            <label>Compose guidance <textarea id="skill-compose" rows="3"></textarea></label>
+            <label>Discovery guidance <textarea id="skill-discovery" rows="3"></textarea></label>
+            <div class="row">
+              <button id="skill-save" class="primary">Save</button>
+              <button id="skill-cancel" type="button">Cancel</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Browse published skills</h3>
+          <div class="row">
+            <button id="skill-browse" class="primary">Refresh from GitHub</button>
+            <span id="skill-browse-note" class="muted"></span>
+          </div>
+          <div id="skill-browse-list"></div>
+          <hr />
+          <label>
+            Install by owner/repo
+            <input id="skill-install-input" placeholder="someone/stickerbot-skill-indie-board-games" />
+          </label>
+          <div class="row">
+            <button id="skill-install-btn">Install</button>
+            <span id="skill-install-note" class="muted"></span>
+          </div>
         </div>
       </section>
 

@@ -90,6 +90,56 @@ Looks up by Message-ID in the local log first, then falls back to an IMAP
 
 ---
 
+## Skills (the "app store")
+
+A **skill** is a reusable preset that bundles an agenda template, a default
+request item, and a bit of tone/filtering guidance. Set one active and the
+run form fills itself in.
+
+```bash
+stickerbot skill list                          # your installed skills
+stickerbot skill browse                        # what's published on GitHub
+stickerbot skill install someone/stickerbot-skill-indie-games
+stickerbot skill use indie-games               # make it the active skill
+stickerbot skill clear                         # back to default behavior
+```
+
+### Create your own
+
+Interactive playground:
+```bash
+stickerbot skill new
+```
+
+AI-drafted (Claude writes the JSON for you from a description):
+```bash
+stickerbot skill new --ai "Target indie board game studios with a direct-to-consumer store; ask for stickers; tone should be warm and hobbyist"
+```
+
+### Publish one for others
+
+```bash
+stickerbot skill publish my-skill
+```
+
+This requires the [GitHub CLI](https://cli.github.com/) (one-time `gh auth login`). It creates a public repo
+named `stickerbot-skill-<name>` and tags it with the topic
+`stickerbot-skill`. That topic is the index — anyone running
+`stickerbot skill browse` will see it, no registry file or central database.
+
+### Rate limits
+
+`skill browse` and `skill install` call the GitHub API unauthenticated, which
+is 60 requests per hour. If you hit the limit, export a
+[personal access token](https://github.com/settings/tokens) (no scopes
+needed for public data) before running:
+
+```bash
+export GITHUB_TOKEN=ghp_...
+```
+
+---
+
 ## What it does, in order
 
 1. **Discover** — Claude Sonnet 4.6 returns a list of organizations that
