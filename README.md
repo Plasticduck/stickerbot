@@ -1,115 +1,145 @@
 # StickerBot
 
-A tiny bot that finds organizations matching an "agenda" you type in, writes a
-short polite email asking for free stickers (or any item you choose), and sends
-it through your own SMTP account. Two parallel implementations:
+Type an "agenda." StickerBot finds real organizations that match, looks up a
+published contact email on the open web, writes a short polite message asking
+for free stickers (or anything you name), and sends it from your own email
+account. All in your terminal.
 
-- **Python CLI** (single file, stdlib-only) — `stickerbot.py`
-- **Node + web UI** (Express + SQLite + static frontend) — `server.js` / `src/` / `public/`
+```
+┌─ stickerbot ────────────────────────────────────────────────────┐
+│  Agenda (company focus, blank for mix): indie board game studios│
+│  What to ask for: stickers                                      │
+│  How many emails: 5                                             │
+│  Budget cap (USD): 0.50                                         │
+│                                                                  │
+│  [1/5] Stonemaier Games                                         │
+│    ✓ address: press@stonemaier.com (contact page)               │
+│    ✓ composed ($0.0014)                                         │
+│    ✓ sent to press@stonemaier.com                               │
+│    ✓ saved to Sent folder                                       │
+└──────────────────────────────────────────────────────────────────┘
+```
 
-Both use the Anthropic API:
-- Discovery: **Claude Sonnet 4.6** (interprets agenda qualifiers like "Group of
-  Five FBS", "Power Four", "indie bookstores in Texas", etc.)
-- Web search for contact addresses: **Claude Haiku 4.5** with the native
-  `web_search` tool.
-- Compose: **Claude Haiku 4.5**.
+Under the hood it uses the Anthropic API: Claude Sonnet 4.6 for agenda
+comprehension, Claude Haiku 4.5 with the native `web_search` tool to find real
+published contact addresses, and Haiku again to compose the email.
 
 ---
 
-## Requirements
+## Install
 
-- Python 3.10+ (for the CLI) or Node 20+ (for the web UI)
-- An [Anthropic API key](https://console.anthropic.com/)
-- An SMTP + IMAP account you control (tested with Namecheap Private Email)
-- A mailing address where recipients can send you things
+One command. Requires Python 3.10+.
+
+### with `pipx` (recommended)
+
+```bash
+pipx install git+https://github.com/Plasticduck/stickerbot.git
+```
+
+### with `uv`
+
+```bash
+uv tool install git+https://github.com/Plasticduck/stickerbot.git
+```
+
+### with plain `pip` (inside a venv)
+
+```bash
+pip install git+https://github.com/Plasticduck/stickerbot.git
+```
+
+Now `stickerbot` is a command in your terminal.
 
 ---
 
-## One-line install
-
-Clone and move in:
+## First run
 
 ```bash
-git clone https://github.com/Plasticduck/stickerbot.git
-cd stickerbot
+stickerbot
 ```
 
-### Python CLI (no dependencies)
+The setup wizard walks you through:
+
+1. Your Anthropic API key (get one at https://console.anthropic.com/).
+2. Your email account (SMTP + IMAP — tested against Namecheap Private Email;
+   anything that speaks SSL SMTP/IMAP works).
+3. Your display name and return mailing address.
+
+Config is saved to `~/.stickerbot.json`. The local "sent" log is at
+`~/.stickerbot_sent.jsonl`. Nothing is written to the repo directory.
+
+### Running a batch
+
+Every subsequent `stickerbot` run asks for:
+
+- **Agenda** — the category to target. This is taken literally, including
+  qualifiers. `Group of Five FBS football programs` excludes Power-Four
+  schools; `indie bookstores in Texas` excludes chains and non-Texas stores.
+- **What to ask for** — defaults to `stickers`, but you can ask for anything
+  small (pins, bookplates, signatures, postcards, patches, fan-mail replies).
+- **How many emails** and **budget cap** — the run stops when either is hit.
+
+### Looking up a previous email
 
 ```bash
-python stickerbot.py
+stickerbot lookup "<msgid@yourdomain.com>"
 ```
 
-On first run it walks you through setup (Anthropic key, email account,
-return address) and saves the config to `~/.stickerbot.json`.
-
-Look up a previously-sent email by Message-ID:
-
-```bash
-python stickerbot.py lookup "<some-msgid@yourdomain.com>"
-```
-
-### Node + web UI
-
-```bash
-npm install
-cp .env.example .env
-# then edit .env with your real credentials
-npm start
-```
-
-Open http://localhost:3737.
-
----
-
-## Environment variables (Node only)
-
-See [`.env.example`](.env.example) for the full list. The Python CLI stores the
-same info in `~/.stickerbot.json` instead of a `.env` file.
-
-| Variable | What it's for |
-| --- | --- |
-| `ANTHROPIC_API_KEY` | Anthropic API access |
-| `EMAIL_USER` / `EMAIL_PASS` | SMTP + IMAP login |
-| `EMAIL_FROM_NAME` | Display name on the "From:" line |
-| `SENDER_ADDRESS` | Mailing address included under the signature |
-| `SMTP_HOST` / `SMTP_PORT` / `SMTP_SECURE` | Outgoing mail server |
-| `IMAP_HOST` / `IMAP_PORT` / `IMAP_SECURE` / `IMAP_SENT_FOLDER` | For verifying sends and appending to Sent |
-| `PORT` | Web UI port (default 3737) |
+Looks up by Message-ID in the local log first, then falls back to an IMAP
+`HEADER Message-ID` search against your Sent folder.
 
 ---
 
 ## What it does, in order
 
-1. **Discover** — asks Claude Sonnet 4.6 for a list of organizations that
-   literally match your agenda (including any qualifier like conference,
-   geography, size, era, genre).
-2. **Find address** — uses Claude Haiku with the native `web_search` tool to
-   look up a real, published contact email on the organization's own site.
+1. **Discover** — Claude Sonnet 4.6 returns a list of organizations that
+   literally match your agenda (every qualifier: conference, geography, size,
+   era, genre). No sponsors, suppliers, or tangentially related companies.
+2. **Find address** — Claude Haiku 4.5 uses the native `web_search` tool to
+   locate a real, published contact email on the organization's own site.
 3. **Compose** — writes a short, warm, human-sounding email asking for the
-   item you chose (stickers by default). No invented relationships, no
-   geographic or political alignment claims, no dubious factual claims about
-   the organization.
-4. **Send** — SMTP over SSL. Waits 45 s between sends to stay under Namecheap's
-   ~150/hour account-level cap.
+   item you chose. No invented relationships (alum, constituent, local,
+   customer, etc.), no geographic proximity claims, no political alignment
+   claims, no dubious factual claims about the organization.
+4. **Send** — SMTP over SSL. Waits 45 s between sends to stay under typical
+   provider caps (~150/hour on Namecheap Private Email).
 5. **Save + verify** — appends the sent message to your IMAP Sent folder and
-   confirms it lands.
+   confirms it landed.
 
 ---
 
 ## Safety
 
-- `.env` is gitignored.
-- The per-run config (`~/.stickerbot.json`) and local sent log
-  (`~/.stickerbot_sent.jsonl`) live in your home directory, not the repo.
-- The SQLite database (`stickerbot.db`, Node side only) is gitignored.
 - Budgets: you set a max spend and max email count per run; the bot stops
   when either is hit.
 - Rate-limit detection: if the SMTP server returns a 450/421 or a known
   rate-limit phrase, the run halts immediately.
+- No silent fallbacks: if discovery fails while you have an agenda set, the
+  bot halts loudly instead of emailing a generic seed list.
+- Secrets live in `~/.stickerbot.json` (the CLI) or a local `.env` (the web
+  UI). Neither is tracked by git.
 
-See [CHANGELOG.md](CHANGELOG.md) for the history of factual-discipline rules
-and other behavior changes.
+See [CHANGELOG.md](CHANGELOG.md) for the history of behavior changes.
+
+---
+
+## Optional: Node + web UI
+
+The repo also ships a Node/Express web-UI implementation if you want a
+browser-based version with a SQLite-backed history tab.
+
+```bash
+git clone https://github.com/Plasticduck/stickerbot.git
+cd stickerbot
+npm install
+cp .env.example .env
+# edit .env with your credentials
+npm start
+```
+
+Then open http://localhost:3737.
+
+See [`.env.example`](.env.example) for the full list of environment variables.
 
 ---
 

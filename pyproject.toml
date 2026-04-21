@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "stickerbot"
+version = "0.1.0"
+description = "Agenda-driven CLI that writes and sends polite 'please send me stickers' emails to real organizations."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "Benjamin Jowers" }]
+keywords = ["cli", "email", "anthropic", "claude", "stickers"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Communications :: Email",
+]
+# stdlib-only CLI, no runtime dependencies
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Plasticduck/stickerbot"
+Repository = "https://github.com/Plasticduck/stickerbot"
+Issues = "https://github.com/Plasticduck/stickerbot/issues"
+
+[project.scripts]
+stickerbot = "stickerbot:main"
+
+[tool.hatch.build.targets.wheel]
+only-include = ["stickerbot.py"]
+
+[tool.hatch.build.targets.sdist]
+only-include = ["stickerbot.py", "README.md", "LICENSE", "CHANGELOG.md"]

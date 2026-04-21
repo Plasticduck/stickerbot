@@ -35,5 +35,7 @@ Thumbs.db
 # Logs
 *.log
 
-# Local-only Python CLI
-stickerbot.py
+# Build artifacts
+dist/
+build/
+*.egg-info/
